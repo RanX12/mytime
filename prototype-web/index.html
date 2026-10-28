@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MyTime — a desktop-pet clock</title>
+<style>
+  /* ---------- demo page (not part of the widget) ---------- */
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; min-height: 100vh;
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #f6f7f9; color: #1c1e21;
+  }
+  .page { max-width: 640px; margin: 0 auto; padding: 64px 24px; }
+  .page h1 { font-size: 22px; margin: 0 0 8px; }
+  .page p { color: #5b616b; margin: 0 0 12px; }
+  .page kbd {
+    font: 12px ui-monospace, monospace; background: #e7e9ee;
+    border-radius: 4px; padding: 1px 5px;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #14161a; color: #e7e9ee; }
+    .page p { color: #9aa1ab; }
+    .page kbd { background: #262a31; }
+  }
+
+  /* ---------- the widget ---------- */
+  .mt {
+    /* the pet itself: fixed footprint, never grows */
+    position: fixed;
+    width: 170px;
+    height: 35px;
+    box-sizing: border-box;
+    z-index: 2147483000;
+
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .92);
+    border: 1px solid rgba(0, 0, 0, .08);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .10);
+    color: #1c1e21;
+
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;                 /* we handle dragging ourselves */
+    transition: box-shadow .15s ease, transform .15s ease;
+  }
+  .mt.is-dragging { cursor: grabbing; transition: none; }
+  .mt:hover, .mt:focus-within { box-shadow: 0 4px 16px rgba(0, 0, 0, .16); }
+
+  .mt-time {
+    font: 600 15px/1 ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums;  /* fixed digit width => no reflow jitter */
+    letter-spacing: .2px;
+    white-space: nowrap;
+  }
+
+  .mt-zone {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 10px; font-weight: 600; letter-spacing: .6px;
+    text-transform: uppercase;
+    color: #8a919c;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: opacity .12s ease;
+    /* Decorative only. It spans the full remaining width and would otherwise
+       hit-test over the gear underneath it — invisible, but still clickable. */
+    pointer-events: none;
+  }
+  /* idle = time only; the zone label steps aside for the controls */
+  .mt:hover .mt-zone,
+  .mt:focus-within .mt-zone,
+  .mt.is-open .mt-zone { opacity: 0; }
+
+  .mt-tools {
+    position: absolute; right: 6px; top: 50%;
+    transform: translateY(-50%);
+    display: flex; gap: 2px;
+    opacity: 0; pointer-events: none;
+    transition: opacity .12s ease;
+  }
+  .mt:hover .mt-tools,
+  .mt:focus-within .mt-tools,
+  .mt.is-open .mt-tools { opacity: 1; pointer-events: auto; }
+
+  .mt-btn {
+    all: unset;
+    display: grid; place-items: center;
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    color: #6b7280;
+    cursor: pointer;
+  }
+  .mt-btn:hover { background: rgba(0, 0, 0, .07); color: #1c1e21; }
+  .mt-btn:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+  .mt-btn svg { width: 14px; height: 14px; display: block; }
+
+  /* ---------- settings panel ---------- */
+  .mt-panel {
+    position: absolute; right: 0; top: calc(100% + 6px);
+    width: 232px;
+    box-sizing: border-box;
+    padding: 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .98);
+    border: 1px solid rgba(0, 0, 0, .10);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+    font: 12px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #1c1e21;
+    cursor: default;
+    display: none;
+  }
+  .mt-panel.is-above { top: auto; bottom: calc(100% + 6px); }
+  .mt.is-open .mt-panel { display: block; }
+
+  .mt-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .mt-row + .mt-row { margin-top: 8px; }
+  .mt-label { font-size: 11px; font-weight: 600; color: #6b7280; }
+  .mt-panel input[type="text"] {
+    width: 100%; box-sizing: border-box;
+    margin: 4px 0 0;
+    padding: 5px 7px;
+    font: 12px/1.3 system-ui, sans-serif;
+    color: inherit;
+    background: rgba(0, 0, 0, .04);
+    border: 1px solid rgba(0, 0, 0, .12);
+    border-radius: 6px;
+  }
+  .mt-panel input[type="text"]:focus { outline: 2px solid #3b82f6; outline-offset: -1px; }
+  .mt-panel label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .mt-link {
+    all: unset; cursor: pointer;
+    font-size: 11px; color: #3b82f6;
+  }
+  .mt-link:hover { text-decoration: underline; }
+  .mt-hint { margin: 8px 0 0; font-size: 10px; color: #9aa1ab; }
+
+  @media (prefers-color-scheme: dark) {
+    .mt {
+      background: rgba(30, 33, 38, .92);
+      border-color: rgba(255, 255, 255, .10);
+      color: #e7e9ee;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, .5);
+    }
+    .mt-btn:hover { background: rgba(255, 255, 255, .10); color: #fff; }
+    .mt-panel {
+      background: rgba(30, 33, 38, .98);
+      border-color: rgba(255, 255, 255, .12);
+      color: #e7e9ee;
+    }
+    .mt-panel input[type="text"] {
+      background: rgba(255, 255, 255, .06);
+      border-color: rgba(255, 255, 255, .14);
+    }
+  }
+  /* Touch devices can never hover, so the controls would be unreachable.
+     There the pet just always wears its gear. */
+  @media (hover: none) {
+    .mt-tools { opacity: 1; pointer-events: auto; }
+    .mt-zone { opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mt, .mt-zone, .mt-tools { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<main class="page">
+  <h1>MyTime</h1>
+  <p>The clock in the corner is the whole app. It sits there showing only the time.</p>
+  <p>Hover it to reveal the controls, click the gear to pick a time zone, and drag it
+     anywhere on the page. Press <kbd>Esc</kbd> to close the settings.</p>
+  <p>Position and preferences are remembered across reloads.</p>
+</main>
+
+<!-- ===================== widget ===================== -->
+<div class="mt" id="mytime" role="group" aria-label="Clock">
+  <span class="mt-time" id="mt-time" role="timer" aria-live="off">--:--:--</span>
+  <span class="mt-zone" id="mt-zone"></span>
+
+  <div class="mt-tools">
+    <button class="mt-btn" id="mt-gear" type="button" aria-label="Clock settings" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="mt-panel" id="mt-panel" role="dialog" aria-label="Clock settings">
+    <div>
+      <div class="mt-row">
+        <span class="mt-label">Time zone</span>
+        <button class="mt-link" id="mt-local" type="button">use device</button>
+      </div>
+      <input type="text" id="mt-tz" list="mt-zones" spellcheck="false"
+             autocomplete="off" placeholder="Asia/Tokyo" aria-label="Time zone">
+      <datalist id="mt-zones"></datalist>
+    </div>
+    <div class="mt-row">
+      <label><input type="checkbox" id="mt-24h"> 24-hour</label>
+      <label><input type="checkbox" id="mt-sec"> Seconds</label>
+    </div>
+    <p class="mt-hint" id="mt-hint"></p>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var WIDTH = 170, HEIGHT = 35, MARGIN = 16;
+  var KEY = 'mytime.v1';
+
+  var el = {
+    root:  document.getElementById('mytime'),
+    time:  document.getElementById('mt-time'),
+    zone:  document.getElementById('mt-zone'),
+    gear:  document.getElementById('mt-gear'),
+    panel: document.getElementById('mt-panel'),
+    zones: document.getElementById('mt-zones'),
+    tz:    document.getElementById('mt-tz'),
+    local: document.getElementById('mt-local'),
+    h24:   document.getElementById('mt-24h'),
+    sec:   document.getElementById('mt-sec'),
+    hint:  document.getElementById('mt-hint')
+  };
+
+  var deviceZone = (function () {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+    catch (e) { return 'UTC'; }
+  })();
+
+  // ---------- state ----------
+  var state = load() || {};
+  if (!isValidZone(state.tz)) state.tz = deviceZone;
+  if (typeof state.h24 !== 'boolean') state.h24 = true;
+  if (typeof state.sec !== 'boolean') state.sec = true;
+  if (typeof state.x !== 'number') state.x = null;   // null => default corner
+  if (typeof state.y !== 'number') state.y = null;
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)); } catch (e) { return null; }
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode */ }
+  }
+
+  function isValidZone(tz) {
+    if (!tz || typeof tz !== 'string') return false;
+    try { new Intl.DateTimeFormat('en', { timeZone: tz }); return true; }
+    catch (e) { return false; }
+  }
+
+  // ---------- clock ----------
+  // One formatter, built once per settings change. Formatting is the only
+  // per-tick work, and the DOM is touched only when the string actually changes.
+  var fmt = null, lastText = '', timer = null;
+
+  function buildFormatter() {
+    var opts = { hour: '2-digit', minute: '2-digit', hour12: !state.h24, timeZone: state.tz };
+    if (state.sec) opts.second = '2-digit';
+    fmt = new Intl.DateTimeFormat(state.h24 ? 'en-GB' : 'en-US', opts);
+    lastText = '';
+  }
+
+  function render() {
+    var text = fmt.format(new Date());
+    if (text !== lastText) {          // skip the DOM write when nothing moved
+      lastText = text;
+      el.time.textContent = text;
+    }
+  }
+
+  // Self-correcting schedule: always aim at the next real second/minute
+  // boundary instead of drifting by setInterval's accumulated lateness.
+  function schedule() {
+    var now = Date.now();
+    var period = state.sec ? 1000 : 60000;
+    var delay = period - (now % period);
+    if (delay < 20) delay += period;              // never fire twice in one boundary
+    timer = setTimeout(tick, delay + 5);          // +5ms guard against early wakeups
+  }
+  function tick() { render(); schedule(); }
+
+  function start() {
+    stop();
+    render();
+    schedule();
+  }
+  function stop() {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+  }
+
+  // A hidden tab burns nothing; on return we re-render immediately so the
+  // clock is never stale (also covers laptop sleep / clock changes).
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) stop(); else start();
+  });
+  window.addEventListener('pageshow', function () { if (!document.hidden) start(); });
+
+  function zoneLabel(tz) {
+    var city = tz.split('/').pop().replace(/_/g, ' ');
+    var off = '';
+    try {
+      var parts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'shortOffset' })
+        .formatToParts(new Date());
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].type === 'timeZoneName') off = parts[i].value;
+      }
+    } catch (e) { /* older engine: city only */ }
+    return off ? city + ' · ' + off : city;
+  }
+
+  function apply() {
+    buildFormatter();
+    el.zone.textContent = zoneLabel(state.tz);
+    el.zone.title = state.tz;
+    el.root.setAttribute('aria-label', 'Clock, ' + state.tz);
+    el.hint.textContent = state.tz === deviceZone
+      ? 'Device zone · ' + zoneLabel(state.tz)
+      : 'Device is ' + zoneLabel(deviceZone);
+    start();
+    save();
+  }
+
+  // ---------- position ----------
+  function place(x, y) {
+    var maxX = Math.max(0, window.innerWidth - WIDTH);
+    var maxY = Math.max(0, window.innerHeight - HEIGHT);
+    state.x = Math.min(Math.max(0, x), maxX);
+    state.y = Math.min(Math.max(0, y), maxY);
+    el.root.style.left = state.x + 'px';
+    el.root.style.top = state.y + 'px';
+  }
+  function placeDefault() {
+    place(window.innerWidth - WIDTH - MARGIN, window.innerHeight - HEIGHT - MARGIN);
+  }
+  if (state.x === null || state.y === null) placeDefault(); else place(state.x, state.y);
+  window.addEventListener('resize', function () { place(state.x, state.y); });
+
+  // Drag from anywhere on the body of the pet; buttons and the panel opt out.
+  var drag = null;
+  el.root.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0) return;
+    if (e.target.closest('.mt-btn, .mt-panel')) return;
+    drag = { dx: e.clientX - state.x, dy: e.clientY - state.y, moved: false };
+    el.root.setPointerCapture(e.pointerId);
+    el.root.classList.add('is-dragging');
+  });
+  el.root.addEventListener('pointermove', function (e) {
+    if (!drag) return;
+    drag.moved = true;
+    place(e.clientX - drag.dx, e.clientY - drag.dy);
+    if (open) positionPanel();
+  });
+  function endDrag(e) {
+    if (!drag) return;
+    if (el.root.hasPointerCapture(e.pointerId)) el.root.releasePointerCapture(e.pointerId);
+    el.root.classList.remove('is-dragging');
+    if (drag.moved) save();
+    drag = null;
+  }
+  el.root.addEventListener('pointerup', endDrag);
+  el.root.addEventListener('pointercancel', endDrag);
+
+  // ---------- settings panel ----------
+  var open = false, zonesFilled = false;
+
+  function positionPanel() {
+    // Flip above the pet when there is not enough room below it.
+    var below = window.innerHeight - (state.y + HEIGHT);
+    el.panel.classList.toggle('is-above', below < 170);
+  }
+
+  // The ~450-entry zone list is only materialised the first time the panel opens.
+  function fillZones() {
+    if (zonesFilled) return;
+    zonesFilled = true;
+    var list;
+    try { list = Intl.supportedValuesOf('timeZone'); } catch (e) { list = null; }
+    if (!list || !list.length) {
+      list = ['UTC', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow',
+        'Africa/Cairo', 'Africa/Lagos', 'Africa/Johannesburg', 'Asia/Dubai',
+        'Asia/Kolkata', 'Asia/Bangkok', 'Asia/Shanghai', 'Asia/Hong_Kong',
+        'Asia/Singapore', 'Asia/Tokyo', 'Asia/Seoul', 'Australia/Sydney',
+        'Pacific/Auckland', 'America/Sao_Paulo', 'America/New_York',
+        'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+        'America/Anchorage', 'Pacific/Honolulu'];
+    }
+    if (list.indexOf(deviceZone) === -1) list = [deviceZone].concat(list);
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < list.length; i++) {
+      var o = document.createElement('option');
+      o.value = list[i];
+      frag.appendChild(o);
+    }
+    el.zones.appendChild(frag);
+  }
+
+  function setOpen(next) {
+    open = next;
+    el.root.classList.toggle('is-open', open);
+    el.gear.setAttribute('aria-expanded', String(open));
+    if (open) {
+      fillZones();
+      positionPanel();
+      el.tz.value = state.tz;
+      el.h24.checked = state.h24;
+      el.sec.checked = state.sec;
+      el.tz.focus();
+      el.tz.select();
+    }
+  }
+
+  el.gear.addEventListener('click', function (e) {
+    e.stopPropagation();
+    setOpen(!open);
+  });
+
+  document.addEventListener('pointerdown', function (e) {
+    if (open && !el.root.contains(e.target)) setOpen(false);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && open) { setOpen(false); el.gear.focus(); }
+  });
+
+  function commitZone() {
+    var v = el.tz.value.trim();
+    if (v && isValidZone(v)) {
+      state.tz = v;
+      apply();
+    } else {
+      el.tz.value = state.tz;        // reject typos, keep the working zone
+    }
+  }
+  el.tz.addEventListener('change', commitZone);
+  el.tz.addEventListener('blur', commitZone);
+  el.tz.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { commitZone(); el.tz.blur(); }
+  });
+
+  el.local.addEventListener('click', function () {
+    state.tz = deviceZone;
+    el.tz.value = deviceZone;
+    apply();
+  });
+  el.h24.addEventListener('change', function () { state.h24 = el.h24.checked; apply(); });
+  el.sec.addEventListener('change', function () {
+    state.sec = el.sec.checked;
+    apply();                          // also switches the tick to once per minute
+  });
+
+  apply();
+})();
+</script>
+</body>
+</html>
