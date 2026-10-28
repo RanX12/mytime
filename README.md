@@ -12,6 +12,56 @@ open MyTime/build/MyTime.app
 No Xcode project, no package manager, no dependencies — `build.sh` is a single
 `swiftc` invocation that assembles the `.app` bundle.
 
+## Running with pm2
+
+`ecosystem.config.js` runs the built binary under [pm2](https://pm2.keymetrics.io/)
+as the process `mytime`. It is restarted if it crashes, but **Quit** from the
+gear menu exits with code 0 and pm2 leaves it stopped (`stop_exit_codes: [0]`).
+
+**Start**
+
+```sh
+./MyTime/build.sh                 # build first; pm2 runs MyTime/build/MyTime.app
+pm2 start ecosystem.config.js
+pm2 status                        # confirm `mytime` is online
+```
+
+**Save** — record the current process list so it can be restored later:
+
+```sh
+pm2 save                          # writes ~/.pm2/dump.pm2
+```
+
+Run `pm2 save` again whenever you add or remove processes; restore uses the
+last saved list.
+
+**Restore**
+
+```sh
+pm2 resurrect                     # restart everything from the last `pm2 save`
+```
+
+To restore automatically after a reboot, register pm2 with launchd once:
+
+```sh
+pm2 startup                       # prints a `sudo env PATH=... pm2 startup launchd ...` command
+# copy and run the printed command, then:
+pm2 save
+```
+
+Use either this or the Login Items approach below, not both, or two pets will
+start.
+
+**Day-to-day**
+
+```sh
+pm2 restart mytime                # after rebuilding with ./MyTime/build.sh
+pm2 stop mytime                   # stop without removing it from pm2
+pm2 logs mytime                   # stdout/stderr
+pm2 delete mytime && pm2 save     # remove it and forget it on the next restore
+pm2 unstartup launchd             # stop pm2 launching at login
+```
+
 ## Behaviour
 
 - **Idle:** a calendar tile — weekday over month/day — then the time, plus a
